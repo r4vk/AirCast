@@ -1,0 +1,21 @@
+services:
+  aircast:
+    # Pin a release tag (e.g. :v0.1.0) in production instead of :latest.
+    image: ghcr.io/r4vk/aircast:latest
+    build: .
+    container_name: aircast
+    # Required: mDNS/SSDP multicast and AirPlay UDP back-channels do not work through NAT.
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./data:/data            # certificates, stable port map, optional config.yaml
+    environment:
+      TZ: Etc/UTC
+      # AIRCAST_HOST_IP: 192.168.1.10   # set if the host has several interfaces
+      # AIRCAST_INCLUDE: Kitchen,Living Room
+      # AIRCAST_EXCLUDE: Office
+      # AIRCAST_NAME_FORMAT: "{name} (AirCast)"
+      # AIRCAST_CAST_ENABLED: "true"
+      # AIRCAST_DLNA_ENABLED: "true"
+      # AIRCAST_CAST_AUTH: files
+      # AIRCAST_CAST_AUTH_DIR: /data/cast-auth

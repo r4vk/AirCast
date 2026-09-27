@@ -1,0 +1,11 @@
+.git
+.github
+.venv
+reference
+tests
+docs
+data
+cast-auth
+**/__pycache__
+.pytest_cache
+.ruff_cache

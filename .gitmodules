@@ -1,0 +1,8 @@
+[submodule "reference/AirConnect"]
+	path = reference/AirConnect
+	url = https://github.com/philippe44/AirConnect
+	shallow = true
+[submodule "reference/aircast"]
+	path = reference/aircast
+	url = https://github.com/ains/aircast
+	shallow = true

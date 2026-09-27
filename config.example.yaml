@@ -1,0 +1,37 @@
+# AirCast configuration. Copy to <state_dir>/config.yaml (default /data/config.yaml).
+# Every top-level key can also be set as an environment variable: AIRCAST_<KEY>
+# (lists as comma-separated values). Environment variables win over this file.
+
+# host_ip: 192.168.1.10        # LAN address to advertise; auto-detected when unset
+http_port: 49152               # status page, JSON API and DLNA endpoints
+cast_base_port: 8010           # first Cast port; each speaker gets its own, kept stable
+
+dlna_enabled: true
+cast_enabled: true
+
+scan_interval: 30              # seconds between AirPlay discovery scans
+remove_after_missed_scans: 3
+enable_new_devices: true       # false: only devices listed under `devices` are bridged
+include: []                    # only bridge these names/identifiers (empty = all)
+exclude: []                    # never bridge these names/identifiers
+
+name_format: "{name} (AirCast)"
+
+airplay_version: auto          # auto | 1 | 2
+output_latency: 2.0            # seconds; only used for reported playback position
+
+cast_model: AirCast
+cast_auth: selfsigned          # selfsigned | files (see docs/CAST_AUTH.md)
+# cast_auth_dir: /data/cast-auth
+
+log_level: INFO
+
+# Per-device overrides, keyed by AirPlay identifier (see `aircast --scan`) or name.
+devices:
+  # AABBCCDDEEFF:
+  #   name: Kitchen speaker
+  #   airplay_version: "2"
+  # Office:
+  #   enabled: false
+  # Bedroom:
+  #   password: secret           # AirPlay password, if the speaker requires one

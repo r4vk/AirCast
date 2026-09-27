@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+data/
+# never commit Cast auth material
+cast-auth/
+*.key
+.DS_Store

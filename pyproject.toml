@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aircast-bridge"
+version = "0.1.0"
+description = "Make AirPlay speakers appear as Chromecast and DLNA/UPnP renderers, so Android and other non-Apple devices can stream to them."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "AirCast contributors" }]
+keywords = ["airplay", "raop", "chromecast", "google-cast", "dlna", "upnp", "bridge", "android"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: POSIX :: Linux",
+  "Topic :: Multimedia :: Sound/Audio",
+]
+dependencies = [
+  # pyatv internals (RAOP audio source hook) are used, so the version is pinned.
+  "pyatv==0.18.0",
+  "aiohttp>=3.9",
+  "zeroconf>=0.130",
+  "cryptography>=42",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "pychromecast>=14"]
+
+[project.scripts]
+aircast = "aircast.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["aircast"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = ["reference"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC"]
+# scan timeouts are protocol parameters passed through to pyatv, not asyncio deadlines
+ignore = ["ASYNC109"]
