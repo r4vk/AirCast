@@ -68,7 +68,7 @@ docker run -d --name aircast --network host --restart unless-stopped \
 ```
 
 Images (linux/amd64, linux/arm64, linux/arm/v7) are published to both
-`ghcr.io/r4vk/aircast` and Docker Hub `r4vk/aircast`, tagged `latest`, `X.Y.Z` / `vX.Y.Z`
+`ghcr.io/r4vk/aircast` and Docker Hub `r4ph4el/aircast`, tagged `latest`, `X.Y.Z` / `vX.Y.Z`
 for releases and `edge` for `main`.
 
 or with Compose:
