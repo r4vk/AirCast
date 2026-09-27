@@ -67,6 +67,10 @@ docker run -d --name aircast --network host --restart unless-stopped \
   -v "$PWD/data:/data" ghcr.io/r4vk/aircast:latest
 ```
 
+Images (linux/amd64, linux/arm64, linux/arm/v7) are published to both
+`ghcr.io/r4vk/aircast` and Docker Hub `r4vk/aircast`, tagged `latest`, `X.Y.Z` / `vX.Y.Z`
+for releases and `edge` for `main`.
+
 or with Compose:
 
 ```bash
@@ -83,6 +87,15 @@ List the AirPlay receivers AirCast can see:
 ```bash
 docker run --rm --network host ghcr.io/r4vk/aircast:latest --scan
 ```
+
+## Releasing
+
+1. Bump `version` in `pyproject.toml` and `__version__` in `aircast/__init__.py`.
+2. Commit, then `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+3. CI checks the tag matches both versions, runs tests, pushes the multi-arch image to GHCR
+   and Docker Hub and creates the GitHub Release.
+
+Requires repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
 
 ## Running without Docker
 
