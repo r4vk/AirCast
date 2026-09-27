@@ -14,6 +14,8 @@ SERVICE_TYPE = "_googlecast._tcp.local."
 # Capability bitmask advertised by audio-only receivers (AUDIO_OUT plus the audio-group
 # flag), so senders present the device as a speaker rather than a screen.
 AUDIO_CAPABILITIES = "2052"
+# Same with the "video out" bit set, for targets that play AirPlay video.
+VIDEO_CAPABILITIES = "2053"
 
 
 class CastAdvertiser:
@@ -22,7 +24,10 @@ class CastAdvertiser:
         self._zc = AsyncZeroconf(interfaces=[host_ip], ip_version=IPVersion.V4Only)
         self._infos: dict[str, ServiceInfo] = {}
 
-    async def register(self, cast_id: str, friendly_name: str, model: str, port: int) -> None:
+    async def register(
+        self, cast_id: str, friendly_name: str, model: str, port: int,
+        capabilities: str = AUDIO_CAPABILITIES,
+    ) -> None:
         info = ServiceInfo(
             SERVICE_TYPE,
             f"{model}-{cast_id}.{SERVICE_TYPE}",
@@ -37,7 +42,7 @@ class CastAdvertiser:
                 "md": model,
                 "ic": "/setup/icon.png",
                 "fn": friendly_name,
-                "ca": AUDIO_CAPABILITIES,
+                "ca": capabilities,
                 "st": "0",
                 "bs": "",
                 "nf": "1",

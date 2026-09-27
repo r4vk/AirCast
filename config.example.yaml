@@ -11,9 +11,25 @@ cast_enabled: true
 
 scan_interval: 30              # seconds between AirPlay discovery scans
 remove_after_missed_scans: 3
-enable_new_devices: true       # false: only devices listed under `devices` are bridged
+enable_new_devices: true       # false: new devices start disabled in devices.yaml
 include: []                    # only bridge these names/identifiers (empty = all)
 exclude: []                    # never bridge these names/identifiers
+exclude_dlna: []               # do not publish these as DLNA renderers
+exclude_cast: []               # do not publish these as Cast receivers
+
+# Every discovered device is written here (relative to state_dir) right after start;
+# edit it to ignore devices or change them, no restart needed. "" disables the file.
+devices_file: devices.yaml
+
+# Media types published per detected device type: audio | video (image: not yet).
+# Video is only offered when the device advertises AirPlay video.
+media_types:
+  apple_tv: [audio, video]
+  tv: [audio, video]
+  computer: [audio, video]
+  homepod: [audio]
+  airport: [audio]
+  speaker: [audio]
 
 name_format: "{name} (AirCast)"
 
@@ -24,14 +40,23 @@ cast_model: AirCast
 cast_auth: selfsigned          # selfsigned | files (see docs/CAST_AUTH.md)
 # cast_auth_dir: /data/cast-auth
 
-log_level: INFO
+log_level: INFO               # DEBUG | INFO | WARNING | ERROR
+# log_file: aircast.log        # also log to <state_dir>/aircast.log
+log_max_size: 10               # MiB per file before rotating
+log_backups: 5                 # rotated files to keep
 
 # Per-device overrides, keyed by AirPlay identifier (see `aircast --scan`) or name.
+# They take precedence over devices.yaml.
 devices:
   # AABBCCDDEEFF:
   #   name: Kitchen speaker
   #   airplay_version: "2"
   # Office:
-  #   enabled: false
+  #   enabled: false             # ignore completely
+  # Bathroom:
+  #   cast: false                # DLNA only
+  # Living room TV:
+  #   media: [audio, video]
+  #   airplay_credentials: "..." # from `atvremote --id <id> --protocol airplay pair`
   # Bedroom:
   #   password: secret           # AirPlay password, if the speaker requires one

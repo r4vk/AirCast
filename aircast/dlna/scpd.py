@@ -10,6 +10,7 @@ from defusedxml import DefusedXmlException
 from defusedxml.ElementTree import fromstring as safe_fromstring
 
 from aircast import __version__
+from aircast.media import AUDIO, sink_protocol_info
 
 AVT = "urn:schemas-upnp-org:service:AVTransport:1"
 RC = "urn:schemas-upnp-org:service:RenderingControl:1"
@@ -23,15 +24,8 @@ SERVICE_IDS = {
     "ConnectionManager": "urn:upnp-org:serviceId:ConnectionManager",
 }
 
-SINK_MIME_TYPES = [
-    "audio/mpeg", "audio/mp3", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/aacp",
-    "audio/flac", "audio/x-flac", "audio/wav", "audio/x-wav", "audio/wave", "audio/ogg",
-    "audio/x-ogg", "audio/opus", "audio/webm", "audio/x-ms-wma", "audio/L16", "audio/L24",
-    "audio/x-aiff", "audio/aiff", "application/ogg", "application/x-mpegurl",
-    "application/vnd.apple.mpegurl", "video/mp4", "video/mpeg", "video/webm",
-    "video/x-matroska",
-]
-SINK_PROTOCOL_INFO = ",".join(f"http-get:*:{mime}:*" for mime in SINK_MIME_TYPES)
+# Default for audio-only renderers; each renderer advertises its own media types.
+SINK_PROTOCOL_INFO = sink_protocol_info({AUDIO})
 
 # (name, datatype, sendEvents, allowed values)
 _VARS: dict[str, list[tuple[str, str, bool, list[str] | None]]] = {

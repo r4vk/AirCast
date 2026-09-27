@@ -1,6 +1,7 @@
 """Protocol-neutral playback engine: URL -> ffmpeg -> PCM -> AudioOutput.
 
-The DLNA and Cast frontends both drive a Player; the Player owns the transcoder and
+Video, on targets that support it, bypasses ffmpeg: the URL goes to a VideoOutput and the
+receiver fetches it itself. The DLNA and Cast frontends both drive a Player; the Player
 reports state changes back to every frontend through listeners.
 """
 
@@ -9,11 +10,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
+
+from aircast import media as kinds
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -95,6 +99,21 @@ class AudioOutput(ABC):
         await self.stop()
 
 
+class VideoOutput(ABC):
+    """A sink that is handed a URL and fetches the media itself (AirPlay video)."""
+
+    @abstractmethod
+    async def play_url(self, media: Media, position: float, on_started: Callable[[], None]) -> None:
+        """Play until the media ends or stop() is called; call on_started once it plays."""
+
+    @abstractmethod
+    async def stop(self) -> None:
+        """Stop the current play_url() call, if any."""
+
+    async def close(self) -> None:
+        await self.stop()
+
+
 class Player:
     def __init__(
         self,
@@ -104,9 +123,14 @@ class Player:
         output_latency: float = 2.0,
         name: str = "player",
         allow_local_files: bool = False,
+        media_kinds: frozenset[str] | set[str] | None = None,
+        video_output: VideoOutput | None = None,
     ) -> None:
         self.name = name
         self.output = output
+        self.video_output = video_output
+        # Media types this device is published for (see aircast.media).
+        self.media_kinds = frozenset(media_kinds or {kinds.AUDIO})
         self.ffmpeg = ffmpeg
         self.output_latency = output_latency
         # URLs come from unauthenticated LAN senders: never let ffmpeg open local files
@@ -128,6 +152,7 @@ class Player:
         self._task: asyncio.Task | None = None
         self._proc: asyncio.subprocess.Process | None = None
         self._stream: PcmStream | None = None
+        self._video_since: float | None = None  # monotonic time video playback started
         self._run_id = 0
         self._offset = 0.0
         self._paused_at = 0.0
@@ -159,13 +184,28 @@ class Player:
     def position(self) -> float:
         if self.state == PlayerState.PLAYING and self._stream is not None:
             return self._offset + max(0.0, self._stream.seconds - self.output_latency)
+        if self.state == PlayerState.PLAYING and self._video_since is not None:
+            return self._offset + time.monotonic() - self._video_since
         if self.state == PlayerState.PAUSED:
             return self._paused_at
         return 0.0
 
+    def route(self, media: Media) -> str:
+        """How `media` would be played ("audio" or "video"); PlayerError if it is not accepted."""
+        kind = kinds.media_kind(media.mime, media.url)
+        if kind == kinds.VIDEO and kinds.VIDEO in self.media_kinds and self.video_output:
+            return kinds.VIDEO
+        # Without video, a video file still plays its soundtrack on an audio device.
+        if kind in (kinds.AUDIO, kinds.VIDEO) and kinds.AUDIO in self.media_kinds:
+            return kinds.AUDIO
+        if kind == kinds.IMAGE:
+            raise PlayerError("images are not supported")
+        raise PlayerError(f"{kind} is not enabled for this device")
+
     # -- commands ----------------------------------------------------------
 
     async def load(self, media: Media, *, autoplay: bool = False, start: float = 0.0) -> None:
+        self.route(media)  # reject before interrupting what is playing
         async with self._lock:
             await self._halt()
             self.media = media
@@ -179,6 +219,8 @@ class Player:
                 self._set_state(PlayerState.STOPPED)
 
     async def set_next(self, media: Media | None) -> None:
+        if media is not None:
+            self.route(media)
         self.next_media = media
         self._notify()
 
@@ -243,6 +285,8 @@ class Player:
         async with self._lock:
             await self._halt()
         await self.output.close()
+        if self.video_output is not None:
+            await self.video_output.close()
 
     # -- internals ---------------------------------------------------------
 
@@ -265,6 +309,13 @@ class Player:
         run_id = self._run_id
         self._offset = offset
         self._paused_at = offset
+        self._stream = None
+        self._video_since = None
+        if self.route(self.media) == kinds.VIDEO:
+            _LOGGER.info("[%s] Playing video %s from %.1fs", self.name, self.media.url, offset)
+            self._set_state(PlayerState.TRANSITIONING)
+            self._task = asyncio.create_task(self._run_video(run_id, self.media, offset))
+            return
 
         _LOGGER.info("[%s] Playing %s from %.1fs", self.name, self.media.url, offset)
         proc = await asyncio.create_subprocess_exec(
@@ -308,7 +359,27 @@ class Player:
 
         if error is None and proc.returncode not in (0, None) and stream.frames == 0:
             error = f"ffmpeg: {stderr.strip()[-300:] or f'exit code {proc.returncode}'}"
+        await self._finish(run_id, error)
 
+    async def _run_video(self, run_id: int, media: Media, offset: float) -> None:
+        assert self.video_output is not None
+
+        def started() -> None:
+            if run_id == self._run_id and self.state == PlayerState.TRANSITIONING:
+                self._video_since = time.monotonic()
+                self._set_state(PlayerState.PLAYING)
+
+        error: str | None = None
+        try:
+            await self.video_output.play_url(media, offset, started)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _LOGGER.warning("[%s] Video output failed: %s", self.name, exc)
+            error = f"video: {exc}"
+        await self._finish(run_id, error)
+
+    async def _finish(self, run_id: int, error: str | None) -> None:
         # Check before taking the lock: _halt() holds it while waiting for this task.
         if run_id != self._run_id:
             return  # superseded by stop/seek/load; the new owner sets the state
@@ -342,6 +413,9 @@ class Player:
             return
         with contextlib.suppress(Exception):
             await self.output.stop()
+        if self.video_output is not None:
+            with contextlib.suppress(Exception):
+                await self.video_output.stop()
         if proc is not None and proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()

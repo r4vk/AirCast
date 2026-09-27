@@ -5,9 +5,14 @@
 | Module | Role |
 |---|---|
 | `aircast/bridge.py` | Discovery loop; creates/renames/removes one `VirtualDevice` per AirPlay target |
-| `aircast/airplay/discovery.py` | `pyatv.scan` filtered to RAOP services |
+| `aircast/airplay/discovery.py` | `pyatv.scan` (RAOP + AirPlay services); device type and video capability |
 | `aircast/airplay/output.py` | `AudioOutput` that streams raw PCM to a speaker with pyatv |
-| `aircast/player.py` | Protocol-neutral engine: URL → ffmpeg → PCM → output; state, position, queue |
+| `aircast/airplay/video.py` | `VideoOutput` that hands video URLs to Apple TV / AirPlay TVs (`play_url`) |
+| `aircast/player.py` | Protocol-neutral engine: URL → ffmpeg → PCM → output, or URL → video output; state, position, queue |
+| `aircast/media.py` | Media kinds (audio/video/image) and the MIME types advertised for each |
+| `aircast/config.py` | Options, per-device overrides, resolution into effective `DeviceSettings` |
+| `aircast/devices.py` | `devices.yaml`: discovered devices, user edits kept, reloaded on change |
+| `aircast/logs.py` | Console + rotating file logging |
 | `aircast/dlna/ssdp.py` | SSDP responder/advertiser for all virtual renderers |
 | `aircast/dlna/renderer.py` | UPnP SOAP control + GENA eventing, mapped onto `Player` |
 | `aircast/dlna/scpd.py` | Service descriptions, device description, DIDL-Lite helpers |

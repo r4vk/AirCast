@@ -14,10 +14,13 @@ from aiohttp import web
 
 from aircast.airplay.discovery import AirPlayTarget, scan
 from aircast.airplay.output import AirPlayOutput
-from aircast.config import Config
+from aircast.airplay.video import AirPlayVideoOutput
+from aircast.config import Config, DeviceSettings
+from aircast.devices import DevicesFile
 from aircast.dlna import scpd
 from aircast.dlna.renderer import DlnaRenderer
 from aircast.dlna.ssdp import SsdpDevice, SsdpServer
+from aircast.media import VIDEO, sink_protocol_info
 from aircast.player import Player
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,17 +31,48 @@ _NAMESPACE = uuid.UUID("4f3c2a9e-6b1d-4c1e-9f5a-a1c0a57b12d3")
 
 
 @dataclass
+class DiscoveredDevice:
+    """An AirPlay device seen on the network, bridged or not."""
+
+    target: AirPlayTarget
+    settings: DeviceSettings
+    missed_scans: int = 0
+
+    def to_json(self) -> dict:
+        return {
+            "id": self.target.identifier,
+            "airplay_name": self.target.name,
+            "address": self.target.address,
+            "model": self.target.model,
+            "type": self.settings.device_type,
+            "supports_video": self.target.supports_video,
+            "status": self.settings.status,
+            "dlna": self.settings.dlna,
+            "cast": self.settings.cast,
+            "media": sorted(self.settings.media),
+        }
+
+
+@dataclass
 class VirtualDevice:
     target: AirPlayTarget
+    settings: DeviceSettings
     display_name: str
     player: Player
     output: AirPlayOutput
     dlna_key: str
     cast_id: str
+    video: AirPlayVideoOutput | None = None
     cast_port: int | None = None
     dlna: DlnaRenderer | None = None
     cast: object | None = None  # CastReceiver, imported lazily
     missed_scans: int = 0
+
+    @property
+    def cast_capabilities(self) -> str:
+        from aircast.cast.mdns import AUDIO_CAPABILITIES, VIDEO_CAPABILITIES
+
+        return VIDEO_CAPABILITIES if self.video is not None else AUDIO_CAPABILITIES
 
     def to_json(self) -> dict:
         media = self.player.media
@@ -48,6 +82,8 @@ class VirtualDevice:
             "airplay_name": self.target.name,
             "address": self.target.address,
             "model": self.target.model,
+            "type": self.settings.device_type,
+            "media_types": sorted(self.settings.media),
             "state": self.player.state.value,
             "position": round(self.player.position, 1),
             "volume": round(self.player.volume),
@@ -65,6 +101,9 @@ class Bridge:
         self.config = config
         self.host_ip = config.resolved_host_ip()
         self.devices: dict[str, VirtualDevice] = {}
+        self.discovered: dict[str, DiscoveredDevice] = {}
+        path = config.devices_path()
+        self.devices_file = DevicesFile(path) if path is not None else None
         self.renderers: dict[str, DlnaRenderer] = {}
         self._state_path = Path(config.state_dir) / "state.json"
         self._slots: dict[str, int] = {}
@@ -160,23 +199,59 @@ class Bridge:
             await asyncio.sleep(self.config.scan_interval)
 
     async def sync(self, targets: list[AirPlayTarget]) -> None:
+        if self.devices_file is not None:
+            self.devices_file.reload_if_changed()
         seen = set()
+        resolved: list[tuple[AirPlayTarget, DeviceSettings]] = []
         for target in targets:
-            if not self.config.is_wanted(target.identifier, target.name):
+            discovered = self.devices_file.get(target.identifier) if self.devices_file else None
+            settings = self.config.resolve(target, discovered)
+            resolved.append((target, settings))
+            known = self.discovered.get(target.identifier)
+            # New bridged devices are logged by _add(); log ignored ones and status changes.
+            if (known is None and not settings.bridged) or (
+                    known is not None and known.settings.status != settings.status):
+                _LOGGER.info("AirPlay device '%s' (%s, %s): %s", target.name,
+                             settings.device_type, target.address, settings.status)
+            self.discovered[target.identifier] = DiscoveredDevice(target, settings)
+
+            device = self.devices.get(target.identifier)
+            if not settings.bridged:
+                if device is not None:
+                    await self._remove(device)
                 continue
             seen.add(target.identifier)
-            device = self.devices.get(target.identifier)
+            if device is not None and device.settings.signature != settings.signature:
+                _LOGGER.info("Settings of '%s' changed, re-creating its virtual device",
+                             target.name)
+                await self._remove(device)
+                device = None
             if device is None:
                 try:
-                    await self._add(target)
+                    await self._add(target, settings)
                 except Exception:
                     _LOGGER.exception("Cannot create virtual device for %s", target.name)
                 continue
             device.missed_scans = 0
             device.output.update_config(target.conf)
-            if target.name != device.target.name:
-                await self._rename(device, target)
+            if device.video is not None:
+                device.video.update_config(target.conf)
+            if settings.display_name != device.display_name:
+                await self._rename(device, target, settings.display_name)
             device.target = target
+            device.settings = settings
+
+        if self.devices_file is not None:
+            self.devices_file.update(self.config, resolved)
+
+        scanned = {target.identifier for target in targets}
+        for identifier, entry in list(self.discovered.items()):
+            if identifier in scanned:
+                continue
+            entry.missed_scans += 1
+            if (entry.missed_scans >= self.config.remove_after_missed_scans
+                    and identifier not in self.devices):
+                del self.discovered[identifier]
 
         for identifier, device in list(self.devices.items()):
             if identifier in seen:
@@ -185,33 +260,46 @@ class Bridge:
             busy = device.player.state.value in ("PLAYING", "TRANSITIONING")
             if device.missed_scans >= self.config.remove_after_missed_scans and not busy:
                 _LOGGER.info("AirPlay device '%s' disappeared", device.target.name)
+                self.discovered.pop(identifier, None)
                 await self._remove(device)
 
-    async def _add(self, target: AirPlayTarget) -> None:
+    async def _add(self, target: AirPlayTarget, settings: DeviceSettings) -> None:
         cfg = self.config
-        override = cfg.override_for(target.identifier, target.name)
-        name = cfg.display_name(target.identifier, target.name)
+        override = settings.override
+        name = settings.display_name
         output = AirPlayOutput(
             target.conf,
             airplay_version=override.airplay_version or cfg.airplay_version,
             password=override.password,
             credentials=override.credentials,
         )
+        video = None
+        if VIDEO in settings.media:
+            video = AirPlayVideoOutput(
+                target.conf,
+                credentials=override.airplay_credentials or override.credentials,
+                password=override.password,
+            )
         player = Player(output, ffmpeg=cfg.ffmpeg, output_latency=cfg.output_latency,
-                        name=target.name)
+                        name=target.name, media_kinds=settings.media, video_output=video)
         device = VirtualDevice(
             target=target,
+            settings=settings,
             display_name=name,
             player=player,
             output=output,
+            video=video,
             dlna_key=str(uuid.uuid5(_NAMESPACE, f"dlna:{target.identifier}")),
             cast_id=uuid.uuid5(_NAMESPACE, f"cast:{target.identifier}").hex,
         )
-        _LOGGER.info("New AirPlay device '%s' (%s, %s) -> '%s'", target.name, target.model,
-                     target.address, name)
+        protocols = [p for p, on in (("DLNA", settings.dlna), ("Cast", settings.cast)) if on]
+        _LOGGER.info("New virtual device '%s' for '%s' (%s, %s): %s, media: %s", name,
+                     target.name, target.model, target.address, "+".join(protocols),
+                     ", ".join(sorted(settings.media)))
 
-        if cfg.dlna_enabled and self._ssdp is not None:
-            device.dlna = DlnaRenderer(device.dlna_key, name, player, target.identifier)
+        if settings.dlna and self._ssdp is not None:
+            device.dlna = DlnaRenderer(device.dlna_key, name, player, target.identifier,
+                                       sink_protocol_info(settings.media))
             self.renderers[device.dlna_key] = device.dlna
             self._ssdp.add(SsdpDevice(
                 udn=device.dlna.udn,
@@ -220,30 +308,27 @@ class Bridge:
                 service_types=list(scpd.SERVICES.values()),
             ))
 
-        if cfg.cast_enabled and self._auth is not None:
+        if settings.cast and self._auth is not None:
             from aircast.cast.receiver import CastReceiver
 
             device.cast_port = self._cast_port_for(target.identifier)
             receiver = CastReceiver(name, player, self._auth, device.cast_port)
             await receiver.start()
             device.cast = receiver
-            await self._mdns.register(device.cast_id, name, cfg.cast_model, device.cast_port)
+            await self._mdns.register(device.cast_id, name, cfg.cast_model, device.cast_port,
+                                      device.cast_capabilities)
 
         self.devices[target.identifier] = device
 
-    async def _rename(self, device: VirtualDevice, target: AirPlayTarget) -> None:
-        override = self.config.override_for(target.identifier, target.name)
-        if override.name:
-            return
-        name = self.config.display_name(target.identifier, target.name)
-        _LOGGER.info("AirPlay device renamed '%s' -> '%s'", device.target.name, target.name)
+    async def _rename(self, device: VirtualDevice, target: AirPlayTarget, name: str) -> None:
+        _LOGGER.info("Virtual device renamed '%s' -> '%s'", device.display_name, name)
         device.display_name = name
         if device.dlna is not None:
             device.dlna.friendly_name = name
         if device.cast is not None:
             device.cast.friendly_name = name  # type: ignore[attr-defined]
             await self._mdns.register(device.cast_id, name, self.config.cast_model,
-                                      device.cast_port)
+                                      device.cast_port, device.cast_capabilities)
 
     async def _remove(self, device: VirtualDevice) -> None:
         self.devices.pop(device.target.identifier, None)

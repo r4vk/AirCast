@@ -28,6 +28,12 @@ It is the reverse direction of [AirConnect](https://github.com/philippe44/AirCon
 - **Google Cast receiver** — Cast V2 channel over TLS, Default Media Receiver media
   namespace (LOAD / PLAY / PAUSE / SEEK / STOP / volume), multiple senders, status broadcasts.
 - Any format ffmpeg can read: MP3, AAC/M4A, FLAC, ALAC, Opus, Vorbis, WAV, HLS, internet radio.
+- **Video on Apple TV and AirPlay TVs**: detected device types (`apple_tv`, `tv`, `homepod`,
+  `airport`, `computer`, `speaker`) decide what each virtual device is published for; video
+  URLs are handed to the receiver over AirPlay.
+- **`devices.yaml`**: every discovered device is listed automatically; ignore a device
+  completely or only for DLNA/Cast, rename it or change its media types — applied without
+  a restart.
 - Status page and JSON API (`/`, `/api/devices`, `/healthz`).
 - Configuration through environment variables or a YAML file; per-device overrides.
 - Multi-arch image: `linux/amd64`, `linux/arm64`, `linux/arm/v7` (NAS, Raspberry Pi).
@@ -100,7 +106,10 @@ or as an environment variable `AIRCAST_<OPTION>`; environment variables win.
 | `cast_base_port` | `8010` | First Cast port; each speaker gets its own (persisted) |
 | `dlna_enabled` / `cast_enabled` | `true` | Toggle the frontends |
 | `include` / `exclude` | empty | Names or identifiers to bridge / skip (comma-separated in env) |
-| `enable_new_devices` | `true` | `false` = only bridge devices listed under `devices` |
+| `exclude_dlna` / `exclude_cast` | empty | Names or identifiers not to publish over DLNA / Cast only |
+| `enable_new_devices` | `true` | `false` = newly discovered devices start disabled (`enabled: false` in `devices.yaml`) |
+| `devices_file` | `devices.yaml` | List of discovered devices, relative to `state_dir`; `""` disables it |
+| `media_types` | see below | Media types published per device type (YAML only) |
 | `name_format` | `{name} (AirCast)` | Name of the virtual device |
 | `scan_interval` | `30` | Seconds between discovery scans |
 | `remove_after_missed_scans` | `3` | Drop a speaker after this many missed scans (never while playing) |
@@ -112,9 +121,75 @@ or as an environment variable `AIRCAST_<OPTION>`; environment variables win.
 | `ffmpeg` | `ffmpeg` | Path to ffmpeg |
 | `state_dir` | `/data` | Certificates, port map, default config location |
 | `log_level` | `INFO` | `DEBUG` for protocol traces (`-v` on the CLI) |
+| `log_file` | — | Also log to this file (relative to `state_dir`), e.g. `aircast.log` |
+| `log_max_size` | `10` | MiB per log file before it is rotated |
+| `log_backups` | `5` | Rotated log files to keep (`aircast.log.1` … `.5`) |
 
 Per-device overrides (`devices:` in YAML, keyed by identifier from `aircast --scan` or by name):
-`enabled`, `name`, `password`, `credentials`, `airplay_version`.
+
+| Key | Description |
+|---|---|
+| `enabled` | `false` ignores the device completely |
+| `dlna` / `cast` | `false` does not publish it over that protocol |
+| `media` | `[audio]`, `[audio, video]`, `[video]` — what the virtual device accepts and advertises |
+| `type` | override the detected device type |
+| `name` | name of the virtual device |
+| `password`, `credentials` | AirPlay password / RAOP credentials |
+| `airplay_credentials` | AirPlay pairing credentials, needed for video on Apple TV |
+| `airplay_version` | force `1` or `2` |
+
+### Discovered devices (`devices.yaml`)
+
+Right after start (after the first scan, a few seconds) AirCast writes
+`<state_dir>/devices.yaml` and adds every newly discovered AirPlay device to it — the
+equivalent of AirConnect's `-i config.xml`. Edit it to ignore devices; changes apply on the
+next scan (`scan_interval`), no restart needed:
+
+```yaml
+devices:
+  AA:BB:CC:DD:EE:01:
+    enabled: true
+    dlna: true
+    cast: false          # DLNA only
+    media: [audio]
+    info: {name: Kitchen, model: AudioAccessory5,1, type: homepod, address: 192.168.1.20,
+           video: false, status: bridged}
+  AA:BB:CC:DD:EE:02:
+    enabled: false       # ignored completely
+    ...
+```
+
+Your edits are kept; only `info` is rewritten by AirCast (it shows the detected type and
+whether the device is bridged or why not). Devices that disappear stay in the file.
+Settings under `devices:` in `config.yaml` take precedence over `devices.yaml`, and global
+`exclude*`/`include` lists always apply. The status page lists all discovered devices too,
+and `/api/devices` returns them under `discovered`.
+
+### Device types and media types
+
+AirCast classifies each device from its AirPlay advertisement (model, OS, feature flags)
+and uses `media_types` for the default. Video is only published when the device itself
+advertises AirPlay video.
+
+```yaml
+media_types:            # defaults
+  apple_tv: [audio, video]
+  tv: [audio, video]
+  computer: [audio, video]
+  homepod: [audio]
+  airport: [audio]
+  speaker: [audio]
+```
+
+- `audio`: DLNA advertises audio formats only and Cast announces an audio-only receiver.
+  A video URL sent anyway plays its soundtrack.
+- `video`: DLNA additionally advertises `video/mp4`, `video/quicktime`, `video/x-m4v`,
+  `video/mpeg` and Cast announces video output. Video URLs are not transcoded: the URL is
+  handed to the receiver over AirPlay and the receiver fetches it itself (H.264/HEVC in
+  MP4/MOV or HLS). Apple TVs normally require pairing first:
+  `atvremote --id <id> --protocol airplay pair`, then put the credentials in
+  `devices.<id>.airplay_credentials`.
+- `image`: accepted in the configuration but not supported yet; image URLs are rejected.
 
 ## Network ports
 
@@ -148,6 +223,8 @@ endpoints are unauthenticated: anyone on the network can play audio on your spea
 - AirPlay speakers that require HomeKit pairing (some TVs) are not supported; speakers with
   a simple password are (`devices.<id>.password`).
 - Multi-room sync across several AirPlay speakers is not implemented.
+- Video: position is estimated from wall-clock time, pause/seek restart playback at the
+  position, and volume changes do not apply to video (use the TV remote).
 
 ## Development
 

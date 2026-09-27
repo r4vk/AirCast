@@ -9,6 +9,7 @@ import signal
 
 from aircast import __version__
 from aircast.config import load_config
+from aircast.logs import configure_logging
 
 
 def main() -> None:
@@ -25,12 +26,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
-    level = logging.DEBUG if args.verbose else getattr(logging, config.log_level.upper(), 20)
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
-    if not args.verbose:
-        # pyatv and zeroconf are chatty at INFO.
-        logging.getLogger("pyatv").setLevel(max(level, logging.WARNING))
-        logging.getLogger("zeroconf").setLevel(max(level, logging.WARNING))
+    configure_logging(config, args.verbose)
 
     if args.scan:
         asyncio.run(_scan(config.scan_timeout))
@@ -45,7 +41,9 @@ async def _scan(timeout: int) -> None:
     if not targets:
         print("No AirPlay receivers found.")
     for target in targets:
-        print(f"{target.name:<32} {target.address:<16} {target.model:<20} id={target.identifier}")
+        video = "video" if target.supports_video else "audio"
+        print(f"{target.name:<32} {target.address:<16} {target.model:<20} "
+              f"{target.device_type:<9} {video:<6} id={target.identifier}")
 
 
 async def _run(config) -> None:

@@ -46,8 +46,12 @@ class Subscription:
 
 
 class DlnaRenderer:
-    def __init__(self, key: str, friendly_name: str, player: Player, serial: str) -> None:
-        self.key = key  # uuid string, also used in URLs
+    def __init__(
+        self, key: str, friendly_name: str, player: Player, serial: str,
+        sink_protocol_info: str = scpd.SINK_PROTOCOL_INFO,
+    ) -> None:
+        self.key = key
+        self.sink_protocol_info = sink_protocol_info  # uuid string, also used in URLs
         self.udn = f"uuid:{key}"
         self.friendly_name = friendly_name
         self.player = player
@@ -252,7 +256,7 @@ class DlnaRenderer:
     # ConnectionManager
 
     async def _ConnectionManager_GetProtocolInfo(self, args):
-        return {"Source": "", "Sink": scpd.SINK_PROTOCOL_INFO}
+        return {"Source": "", "Sink": self.sink_protocol_info}
 
     async def _ConnectionManager_GetCurrentConnectionIDs(self, args):
         return {"ConnectionIDs": "0"}
@@ -285,7 +289,7 @@ class DlnaRenderer:
 
     def event_body(self, service: str) -> str:
         if service == "ConnectionManager":
-            props = {"SourceProtocolInfo": "", "SinkProtocolInfo": scpd.SINK_PROTOCOL_INFO,
+            props = {"SourceProtocolInfo": "", "SinkProtocolInfo": self.sink_protocol_info,
                      "CurrentConnectionIDs": "0"}
         else:
             props = {"LastChange": self.last_change(service)}
