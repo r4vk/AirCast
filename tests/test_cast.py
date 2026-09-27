@@ -59,8 +59,11 @@ async def test_play_media_via_default_media_receiver(receiver, tone_file, fake_o
     from aiohttp import web
     from aiohttp.test_utils import TestServer
 
+    async def _serve(_request):
+        return web.FileResponse(tone_file)
+
     app = web.Application()
-    app.router.add_get("/tone.wav", lambda _r: web.FileResponse(tone_file))
+    app.router.add_get("/tone.wav", _serve)
     async with TestServer(app, host="127.0.0.1") as server:
         url = str(server.make_url("/tone.wav"))
         cast = await asyncio.to_thread(_connect, receiver.port)
@@ -95,3 +98,13 @@ async def test_non_url_content_is_rejected(receiver):
         assert receiver.player.media is None
     finally:
         await asyncio.to_thread(cast.disconnect, 5)
+
+
+@requires_ffmpeg
+async def test_launching_other_app_stops_cast_playback(receiver, tone_url):
+    await receiver.launch("CC1AD845")
+    await receiver.load({"media": {"contentId": tone_url, "contentType": "audio/wav"}})
+    await wait_for(lambda: receiver.player.state == PlayerState.PLAYING)
+    await receiver.launch("ABCDEF12")
+    assert receiver.player.state == PlayerState.STOPPED
+    assert receiver.media_status() == []

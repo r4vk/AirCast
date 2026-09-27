@@ -251,7 +251,7 @@ class Bridge:
             if self._ssdp is not None:
                 self._ssdp.remove(device.dlna.udn)
             self.renderers.pop(device.dlna_key, None)
-            device.dlna.close()
+            await device.dlna.close()
         if device.cast is not None:
             with contextlib.suppress(Exception):
                 await self._mdns.unregister(device.cast_id)

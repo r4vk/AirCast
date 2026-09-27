@@ -31,7 +31,7 @@ async def client(player):
     async with TestClient(TestServer(app)) as test_client:
         test_client.renderer = renderer
         yield test_client
-    renderer.close()
+    await renderer.close()
 
 
 def envelope(service: str, action: str, **args: str) -> str:
@@ -99,10 +99,10 @@ async def test_play_without_media_is_701(client):
 
 
 @requires_ffmpeg
-async def test_set_uri_play_and_query(client, tone_file):
+async def test_set_uri_play_and_query(client, tone_url):
     meta = DIDL.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     status, _ = await soap(client, "AVTransport", "SetAVTransportURI", InstanceID="0",
-                           CurrentURI=str(tone_file), CurrentURIMetaData=meta)
+                           CurrentURI=tone_url, CurrentURIMetaData=meta)
     assert status == 200
     player = client.renderer.player
     assert player.media.title == "Song & Co"
@@ -115,16 +115,16 @@ async def test_set_uri_play_and_query(client, tone_file):
     await soap(client, "AVTransport", "Play", InstanceID="0", Speed="1")
     await wait_for(lambda: player.state == PlayerState.PLAYING)
     _, values = await soap(client, "AVTransport", "GetPositionInfo", InstanceID="0")
-    assert values["TrackURI"] == str(tone_file)
+    assert values["TrackURI"] == tone_url
     assert values["TrackDuration"] == "0:00:03"
 
     _, values = await soap(client, "AVTransport", "GetMediaInfo", InstanceID="0")
-    assert values["CurrentURI"] == str(tone_file)
+    assert values["CurrentURI"] == tone_url
     assert "Song" in values["CurrentURIMetaData"]
 
 
 @requires_ffmpeg
-async def test_gena_subscription_receives_last_change(client, tone_file):
+async def test_gena_subscription_receives_last_change(client, tone_url):
     received: list[tuple[dict, str]] = []
 
     async def notify(request: web.Request) -> web.Response:
@@ -149,7 +149,7 @@ async def test_gena_subscription_receives_last_change(client, tone_file):
         assert "NO_MEDIA_PRESENT" in body
 
         await soap(client, "AVTransport", "SetAVTransportURI", InstanceID="0",
-                   CurrentURI=str(tone_file), CurrentURIMetaData="")
+                   CurrentURI=tone_url, CurrentURIMetaData="")
         await soap(client, "AVTransport", "Play", InstanceID="0", Speed="1")
         await wait_for(lambda: any("PLAYING" in b for _, b in received))
 
@@ -171,3 +171,26 @@ def test_parse_didl_live_stream():
     info = scpd.parse_didl(didl)
     assert info["live"] is True
     assert info["mime"] == "audio/wav"
+
+
+async def test_local_file_uri_rejected(client):
+    for uri in ("file:///etc/passwd", "/etc/passwd", "concat:/etc/passwd"):
+        status, values = await soap(client, "AVTransport", "SetAVTransportURI", InstanceID="0",
+                                    CurrentURI=uri, CurrentURIMetaData="")
+        assert status == 500 and values["errorCode"] == "714"
+    assert client.renderer.player.media is None
+
+
+async def test_entity_expansion_is_refused(client):
+    bomb = (
+        '<?xml version="1.0"?><!DOCTYPE lolz [<!ENTITY lol "lol">'
+        '<!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">]>'
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+        f'<u:Play xmlns:u="{scpd.SERVICES["AVTransport"]}"><InstanceID>&lol2;</InstanceID>'
+        "</u:Play></s:Body></s:Envelope>"
+    )
+    resp = await client.post("/dlna/1234/AVTransport/control", data=bomb,
+                             headers={"SOAPACTION": f'"{scpd.SERVICES["AVTransport"]}#Play"'})
+    assert resp.status == 500
+    assert "UPnPError" in await resp.text()
+    assert scpd.parse_didl(bomb) == {}

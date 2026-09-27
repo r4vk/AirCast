@@ -126,6 +126,18 @@ Per-device overrides (`devices:` in YAML, keyed by identifier from `aircast --sc
 | 5353 | UDP | mDNS (AirPlay + Cast discovery) |
 | ephemeral | UDP | AirPlay timing/control/audio (outbound + replies) |
 
+## Security notes
+
+AirCast is meant for a trusted LAN. Like every DLNA renderer and Cast receiver, its control
+endpoints are unauthenticated: anyone on the network can play audio on your speakers.
+
+- Only `http://` and `https://` media URLs are accepted, and ffmpeg runs with a protocol
+  whitelist (`http,https,tcp,tls,crypto`), so senders cannot make it read local files.
+- SOAP and DIDL-Lite XML is parsed with `defusedxml` (no DTDs / entity expansion).
+- The container runs as an unprivileged user; nothing needs root.
+- SSDP answers any M-SEARCH on the LAN (inherent to UPnP). Do not expose the host's
+  ports 1900/5353/49152/8010+ to untrusted networks.
+
 ## Known limitations
 
 - Latency is about two seconds (AirPlay buffering). Fine for music, not for video lip-sync.

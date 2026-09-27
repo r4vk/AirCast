@@ -13,6 +13,8 @@ from xml.sax.saxutils import escape
 
 import aiohttp
 from aiohttp import web
+from defusedxml import DefusedXmlException
+from defusedxml.ElementTree import fromstring as safe_fromstring
 
 from aircast.dlna import scpd
 from aircast.player import IdleReason, Media, Player, PlayerError, PlayerState
@@ -60,12 +62,12 @@ class DlnaRenderer:
         self._pending_event: asyncio.TimerHandle | None = None
         player.add_listener(self._on_player_change)
 
-    def close(self) -> None:
+    async def close(self) -> None:
         self.player.remove_listener(self._on_player_change)
         if self._pending_event:
             self._pending_event.cancel()
         if self._session and not self._session.closed:
-            asyncio.get_running_loop().create_task(self._session.close())
+            await self._session.close()
 
     # -- descriptions ------------------------------------------------------
 
@@ -128,6 +130,8 @@ class DlnaRenderer:
         uri = args.get("CurrentURI", "").strip()
         if not uri:
             raise UpnpError(716, "Resource not found")
+        if not uri.startswith(("http://", "https://")):
+            raise UpnpError(714, "Illegal MIME-type: only http(s) URLs are accepted")
         meta = args.get("CurrentURIMetaData", "")
         media = _media_from(uri, meta)
         playing = self.player.state in (PlayerState.PLAYING, PlayerState.TRANSITIONING)
@@ -137,6 +141,8 @@ class DlnaRenderer:
 
     async def _AVTransport_SetNextAVTransportURI(self, args):
         uri = args.get("NextURI", "").strip()
+        if uri and not uri.startswith(("http://", "https://")):
+            raise UpnpError(714, "Illegal MIME-type: only http(s) URLs are accepted")
         meta = args.get("NextURIMetaData", "")
         self.next_uri, self.next_meta = uri, meta
         await self.player.set_next(_media_from(uri, meta) if uri else None)
@@ -400,7 +406,7 @@ def _soap_fault(code: int, description: str) -> str:
 
 def parse_soap(body: bytes, soap_action: str) -> tuple[str, dict[str, str]]:
     action = soap_action.strip().strip('"').rpartition("#")[2]
-    root = ET.fromstring(body)
+    root = safe_fromstring(body)
     body_el = root.find(f"{{{SOAP_ENV}}}Body")
     if body_el is None or len(body_el) == 0:
         raise UpnpError(401, "Invalid Action")
@@ -444,11 +450,15 @@ def add_routes(app: web.Application, renderers: dict[str, DlnaRenderer]) -> None
             action, args = parse_soap(await request.read(), request.headers.get("SOAPACTION", ""))
             _LOGGER.debug("[%s] %s.%s %s", renderer.friendly_name, service, action, args)
             values = await renderer.handle_action(service, action, args)
-        except ET.ParseError:
+        except (ET.ParseError, DefusedXmlException):
             return _xml(_soap_fault(401, "Invalid Action"), 500)
         except UpnpError as exc:
             _LOGGER.info("[%s] %s failed: %s", renderer.friendly_name, service, exc.description)
             return _xml(_soap_fault(exc.code, exc.description), 500)
+        except Exception:
+            # Controllers only understand SOAP faults; never leak a bare HTTP 500.
+            _LOGGER.exception("[%s] %s action failed", renderer.friendly_name, service)
+            return _xml(_soap_fault(501, "Action Failed"), 500)
         return _xml(_soap_response(scpd.SERVICES[service], action, values))
 
     async def event(request: web.Request) -> web.Response:

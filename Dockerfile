@@ -1,17 +1,16 @@
 # syntax=docker/dockerfile:1
 
 # ---- build: compile wheels (some deps have no prebuilt wheels on armv7) ----
-FROM python:3.12-slim AS build
-RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential libffi-dev \
- && rm -rf /var/lib/apt/lists/*
+FROM python:3.12-alpine AS build
+# cargo: cryptography has no prebuilt musl wheel for armv7 and must be compiled there.
+RUN apk add --no-cache build-base libffi-dev openssl-dev cargo
 WORKDIR /src
 COPY pyproject.toml README.md LICENSE ./
 COPY aircast ./aircast
 RUN pip wheel --no-cache-dir --wheel-dir /wheels .
 
 # ---- runtime ----
-FROM python:3.12-slim
+FROM python:3.12-alpine
 ARG VERSION=dev
 ARG BUILD_SHA=unknown
 LABEL org.opencontainers.image.title="AirCast" \
@@ -21,14 +20,12 @@ LABEL org.opencontainers.image.title="AirCast" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${BUILD_SHA}"
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg \
- && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache ffmpeg
 
 COPY --from=build /wheels /wheels
 RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
 
-RUN useradd --system --uid 1000 --home-dir /data aircast \
+RUN adduser -S -u 1000 -h /data aircast \
  && mkdir -p /data && chown aircast /data
 USER aircast
 VOLUME /data

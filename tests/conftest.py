@@ -43,7 +43,7 @@ def fake_output() -> FakeOutput:
 
 @pytest.fixture
 async def player(fake_output: FakeOutput):
-    instance = Player(fake_output, output_latency=0.0, name="test")
+    instance = Player(fake_output, output_latency=0.0, name="test", allow_local_files=True)
     yield instance
     await instance.shutdown()
 
@@ -59,6 +59,21 @@ def tone_file(tmp_path_factory) -> Path:
             check=True,
         )
     return path
+
+
+@pytest.fixture
+async def tone_url(tone_file):
+    """tone_file served over HTTP, as real senders provide media."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    async def _serve(_request):
+        return web.FileResponse(tone_file)
+
+    app = web.Application()
+    app.router.add_get("/tone.wav", _serve)
+    async with TestServer(app, host="127.0.0.1") as server:
+        yield str(server.make_url("/tone.wav"))
 
 
 async def wait_for(predicate, timeout: float = 5.0) -> None:

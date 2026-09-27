@@ -23,6 +23,7 @@ dependencies = [
   "zeroconf>=0.130",
   "cryptography>=42",
   "PyYAML>=6.0",
+  "defusedxml>=0.7",
 ]
 
 [project.optional-dependencies]

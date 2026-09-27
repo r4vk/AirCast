@@ -64,3 +64,15 @@ async def test_volume_forwarded(player, fake_output):
     assert player.volume == 100
     await player.set_muted(True)
     assert fake_output.volumes == [100, 0]
+
+
+async def test_local_files_blocked_without_opt_in(fake_output, tone_file):
+    from aircast.player import Player
+
+    strict = Player(fake_output, output_latency=0.0, name="strict")
+    try:
+        await strict.load(Media(url=str(tone_file)), autoplay=True)
+        await wait_for(lambda: strict.state == PlayerState.STOPPED)
+        assert strict.idle_reason == IdleReason.ERROR
+    finally:
+        await strict.shutdown()

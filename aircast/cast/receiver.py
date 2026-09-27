@@ -196,9 +196,12 @@ class CastReceiver:
 
     # -- app lifecycle -------------------------------------------------------
 
-    def launch(self, app_id: str) -> None:
+    async def launch(self, app_id: str) -> None:
         if self.app is not None and self.app.app_id == app_id:
             return
+        if self.owns_media:
+            # A new app replaces the old one; do not leave orphaned audio playing.
+            await self.player.stop()
         session = str(uuid.uuid4())
         self.app = CastApp(app_id=app_id, session_id=session, transport_id=session)
         self.media_session_id = 0
@@ -229,9 +232,9 @@ class CastReceiver:
             live=cast_media.get("streamType") == "LIVE",
             cast=cast_media,
         )
-        self.media_session_id += 1
         start = _as_float(payload.get("currentTime")) or 0.0
         await self.player.load(media, autoplay=payload.get("autoplay", True), start=start)
+        self.media_session_id += 1
         self._cast_generation = self.player.media_generation
         return media
 
@@ -347,7 +350,7 @@ class _Client:
         if kind == "GET_STATUS":
             pass
         elif kind == "LAUNCH":
-            receiver.launch(str(payload.get("appId") or DEFAULT_MEDIA_RECEIVER))
+            await receiver.launch(str(payload.get("appId") or DEFAULT_MEDIA_RECEIVER))
         elif kind == "STOP":
             await receiver.stop_app()
         elif kind == "SET_VOLUME":
@@ -377,11 +380,15 @@ class _Client:
         try:
             if kind == "LOAD":
                 if receiver.app is None:
-                    receiver.launch(DEFAULT_MEDIA_RECEIVER)
+                    await receiver.launch(DEFAULT_MEDIA_RECEIVER)
                 try:
                     await receiver.load(payload)
                 except PlayerError as exc:
                     _LOGGER.info("[%s] LOAD rejected: %s", receiver.friendly_name, exc)
+                    self.reply(msg, {"type": "LOAD_FAILED", "requestId": request_id})
+                    return
+                except Exception:
+                    _LOGGER.exception("[%s] LOAD failed", receiver.friendly_name)
                     self.reply(msg, {"type": "LOAD_FAILED", "requestId": request_id})
                     return
             elif kind == "QUEUE_LOAD":
@@ -422,6 +429,11 @@ class _Client:
             _LOGGER.info("[%s] %s failed: %s", receiver.friendly_name, kind, exc)
             self.reply(msg, {"type": "INVALID_REQUEST", "requestId": request_id,
                              "reason": "INVALID_PARAMS"})
+            return
+        except Exception:
+            _LOGGER.exception("[%s] %s failed", receiver.friendly_name, kind)
+            self.reply(msg, {"type": "INVALID_REQUEST", "requestId": request_id,
+                             "reason": "INVALID_COMMAND"})
             return
         self.reply(msg, {"type": "MEDIA_STATUS", "requestId": request_id,
                          "status": receiver.media_status()})

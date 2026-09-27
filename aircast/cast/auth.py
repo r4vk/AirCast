@@ -49,6 +49,7 @@ class AuthProvider(ABC):
 
     def ssl_context(self) -> ssl.SSLContext:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(str(self.tls_cert_path), str(self.tls_key_path))
         return context
 

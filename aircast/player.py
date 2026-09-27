@@ -103,11 +103,15 @@ class Player:
         ffmpeg: str = "ffmpeg",
         output_latency: float = 2.0,
         name: str = "player",
+        allow_local_files: bool = False,
     ) -> None:
         self.name = name
         self.output = output
         self.ffmpeg = ffmpeg
         self.output_latency = output_latency
+        # URLs come from unauthenticated LAN senders: never let ffmpeg open local files
+        # (directly or via file:/concat: references inside a fetched playlist).
+        self.allow_local_files = allow_local_files
 
         self.state = PlayerState.NO_MEDIA
         self.idle_reason = IdleReason.NONE
@@ -244,6 +248,8 @@ class Player:
 
     def _ffmpeg_args(self, url: str, offset: float) -> list[str]:
         args = [self.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error"]
+        if not self.allow_local_files:
+            args += ["-protocol_whitelist", "http,https,tcp,tls,crypto"]
         if url.startswith(("http://", "https://")):
             args += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
         if offset > 0:
@@ -275,10 +281,19 @@ class Player:
         self._proc = proc
         self._stream = PcmStream(proc.stdout, first_frame)
         self._set_state(PlayerState.TRANSITIONING)
-        self._task = asyncio.create_task(self._run(run_id, proc, self._stream, self.media))
+        # Drain stderr continuously: a full pipe would block ffmpeg and freeze the audio.
+        stderr_task = asyncio.create_task(_drain_tail(proc.stderr))
+        self._task = asyncio.create_task(
+            self._run(run_id, proc, stderr_task, self._stream, self.media)
+        )
 
     async def _run(
-        self, run_id: int, proc: asyncio.subprocess.Process, stream: PcmStream, media: Media
+        self,
+        run_id: int,
+        proc: asyncio.subprocess.Process,
+        stderr_task: asyncio.Task,
+        stream: PcmStream,
+        media: Media,
     ) -> None:
         error: str | None = None
         try:
@@ -289,25 +304,24 @@ class Player:
             _LOGGER.warning("[%s] Output failed: %s", self.name, exc)
             error = f"output: {exc}"
         finally:
-            stderr = await _terminate(proc)
-
-        if run_id != self._run_id:
-            return  # superseded by stop/seek/load; the new owner sets the state
+            stderr = await _terminate(proc, stderr_task)
 
         if error is None and proc.returncode not in (0, None) and stream.frames == 0:
             error = f"ffmpeg: {stderr.strip()[-300:] or f'exit code {proc.returncode}'}"
 
-        if error:
-            _LOGGER.warning("[%s] Playback failed: %s", self.name, error)
-            self.last_error = error
-            self._set_state(PlayerState.STOPPED, IdleReason.ERROR)
-            return
-
+        # Check before taking the lock: _halt() holds it while waiting for this task.
+        if run_id != self._run_id:
+            return  # superseded by stop/seek/load; the new owner sets the state
         async with self._lock:
             if run_id != self._run_id:
                 return
             self._task = None  # this task is finishing; do not await it from _halt()
-            if self.next_media is not None:
+            self._proc = None
+            if error:
+                _LOGGER.warning("[%s] Playback failed: %s", self.name, error)
+                self.last_error = error
+                self._set_state(PlayerState.STOPPED, IdleReason.ERROR)
+            elif self.next_media is not None:
                 await self._advance()
             else:
                 self._paused_at = 0.0
@@ -345,18 +359,29 @@ class PlayerError(Exception):
     pass
 
 
-async def _terminate(proc: asyncio.subprocess.Process) -> str:
+async def _terminate(proc: asyncio.subprocess.Process, stderr_task: asyncio.Task) -> str:
     if proc.returncode is None:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
-    stderr = b""
     # Drain both pipes to EOF so their transports close instead of leaking per track.
     with contextlib.suppress(Exception):
         if proc.stdout is not None:
             await asyncio.wait_for(proc.stdout.read(), timeout=2)
-    with contextlib.suppress(Exception):
-        if proc.stderr is not None:
-            stderr = await asyncio.wait_for(proc.stderr.read(), timeout=2)
+    stderr = b""
+    try:
+        stderr = await asyncio.wait_for(stderr_task, timeout=2)
+    except Exception:
+        stderr_task.cancel()
     with contextlib.suppress(Exception):
         await asyncio.wait_for(proc.wait(), timeout=5)
     return stderr.decode(errors="replace")
+
+
+async def _drain_tail(reader: asyncio.StreamReader | None, limit: int = 4096) -> bytes:
+    """Read a stream to EOF, keeping only the last `limit` bytes."""
+    if reader is None:
+        return b""
+    tail = b""
+    while chunk := await reader.read(4096):
+        tail = (tail + chunk)[-limit:]
+    return tail

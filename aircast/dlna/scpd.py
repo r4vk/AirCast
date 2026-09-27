@@ -6,6 +6,9 @@ import re
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
+from defusedxml import DefusedXmlException
+from defusedxml.ElementTree import fromstring as safe_fromstring
+
 from aircast import __version__
 
 AVT = "urn:schemas-upnp-org:service:AVTransport:1"
@@ -269,8 +272,8 @@ def parse_didl(didl: str | None) -> dict[str, object]:
     if not didl or "<" not in didl:
         return result
     try:
-        root = ET.fromstring(didl)
-    except ET.ParseError:
+        root = safe_fromstring(didl)
+    except (ET.ParseError, DefusedXmlException):
         return result
     item = root.find("didl:item", _NS)
     if item is None:

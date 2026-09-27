@@ -85,6 +85,7 @@ class AirPlayOutput(AudioOutput):
         self._credentials = credentials
         self._atv: pyatv.interface.AppleTV | None = None
         self._pending_volume: float | None = None
+        self._connecting: asyncio.Future | None = None
         self._lock = asyncio.Lock()
 
     def update_config(self, conf: BaseConfig) -> None:
@@ -115,7 +116,16 @@ class AirPlayOutput(AudioOutput):
 
     async def play(self, stream: PcmStream, media: Media) -> None:
         async with self._lock:
-            atv = await self._connect()
+            self._connecting = asyncio.ensure_future(self._connect())
+            try:
+                atv = await self._connecting
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+                return  # stop() arrived while still connecting
+            finally:
+                self._connecting = None
             self._atv = atv
         try:
             if self._pending_volume is not None:
@@ -134,6 +144,8 @@ class AirPlayOutput(AudioOutput):
             atv.close()
 
     async def stop(self) -> None:
+        if self._connecting is not None:
+            self._connecting.cancel()
         atv = self._atv
         if atv is not None:
             with contextlib.suppress(Exception):
